@@ -1,0 +1,6 @@
+# estado local / runtime (o app recria sozinho)
+__pycache__/
+.wapa-*.pid
+.wapa-tray.lock
+.wapa-queue.json
+config.json
