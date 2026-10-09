@@ -167,6 +167,7 @@ class WallpaperWindow(Adw.ApplicationWindow):
         self.flow.set_homogeneous(True)
         self.flow.set_column_spacing(12)
         self.flow.set_row_spacing(12)
+        self.flow.set_valign(Gtk.Align.START)  # fileiras com altura natural, sem esticar
         self.flow.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.flow.connect("selected-children-changed", self.on_select)
         self.scrolled.set_child(self.flow)
