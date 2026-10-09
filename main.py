@@ -15,8 +15,11 @@ from gi.repository import Adw, Gtk, Gio, GLib, Gdk
 import wallpaper as wp
 from lang import tr, set_lang
 
-APP_ID = "local.wapa"
+APP_ID = os.environ.get("WAPA_APP_ID", "local.wapa")
 APP_NAME = "Wapa"
+# variante (ex: instalacao do sistema): barramento, pastas e tray separados, sem conflito
+_VARIANT = "" if APP_ID == "local.wapa" else "-" + APP_ID.rsplit(".", 1)[-1].replace("_", "-")
+APP_SYSNAME = "wapa" + _VARIANT
 BASE_DIR = Path(__file__).resolve().parent
 
 
@@ -28,7 +31,7 @@ def _runtime_dir() -> Path:
         probe.unlink()
         return BASE_DIR
     except OSError:
-        d = Path.home() / ".config" / "wapa"
+        d = Path.home() / ".config" / APP_SYSNAME
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -489,6 +492,16 @@ class WallpaperApp(Adw.Application):
                          flags=Gio.ApplicationFlags.FLAGS_NONE)
         self._win = None
 
+    def do_startup(self):
+        # só a instância primária chega aqui (remota delega e sai antes):
+        # pidfile sempre reflete quem realmente está rodando
+        Adw.Application.do_startup(self)
+        try:
+            MAIN_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
+        _ensure_tray()
+
     def do_activate(self):
         if not self._win:
             self._win = WallpaperWindow(self)
@@ -521,6 +534,7 @@ class WallpaperApp(Adw.Application):
 
 
 def main():
+    GLib.set_prgname(APP_SYSNAME)
     cfg = load_config()
     set_lang(cfg.get("lang", "pt_BR"))
     # garante pasta padrão só em runtime (não cria nada fora na instalação)
@@ -528,11 +542,6 @@ def main():
         Path(cfg["folder"]).mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-    try:
-        MAIN_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
-    except OSError:
-        pass
-    _ensure_tray()
     app = WallpaperApp()
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM,
                          lambda: (app.quit(), True)[1])

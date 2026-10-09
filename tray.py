@@ -18,6 +18,8 @@ import wallpaper as wp
 from lang import tr, set_lang
 
 BASE_DIR = Path(__file__).resolve().parent
+APP_ID = os.environ.get("WAPA_APP_ID", "local.wapa")
+APP_SYSNAME = "wapa" if APP_ID == "local.wapa" else "wapa-" + APP_ID.rsplit(".", 1)[-1].replace("_", "-")
 
 
 def _runtime_dir() -> Path:
@@ -28,7 +30,7 @@ def _runtime_dir() -> Path:
         probe.unlink()
         return BASE_DIR
     except OSError:
-        d = Path.home() / ".config" / "wapa"
+        d = Path.home() / ".config" / APP_SYSNAME
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -188,10 +190,10 @@ def main() -> int:
     if not icon:
         icon = FALLBACK_ICON
     try:
-        ind = AI.Indicator.new("wapa", FALLBACK_ICON,
+        ind = AI.Indicator.new(APP_SYSNAME, FALLBACK_ICON,
                                AI.IndicatorCategory.APPLICATION_STATUS)
         if icon != FALLBACK_ICON:
-            ind.set_icon_full(icon, "wapa")
+            ind.set_icon_full(icon, APP_SYSNAME)
         ind.set_status(AI.IndicatorStatus.ACTIVE)
         ind.set_menu(build_menu())
     except Exception as e:
