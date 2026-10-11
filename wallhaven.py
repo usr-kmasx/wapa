@@ -4,6 +4,8 @@ SFW não precisa de chave. NSFW exigiria apikey (não usado pelo wapa).
 """
 import json
 import os
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -11,6 +13,9 @@ from pathlib import Path
 API_BASE = "https://wallhaven.cc/api/v1"
 TIMEOUT = 25
 CACHE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
+# a API limita em 45 req/min (HTTP 429)
+RETRYABLE_CODES = (429, 500, 502, 503, 504)
+RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 SORTINGS = ["relevance", "date_added", "views", "favorites", "toplist", "random"]
 RATIO_PRESETS = [
@@ -36,6 +41,48 @@ RESOLUTION_PRESETS = [
     "3440x1440", "2560x2048", "3840x1600", "3840x2160",
     "3840x2400", "3840x2880", "3840x3072",
 ]
+
+
+class _RateLimited(ConnectionError):
+    """429 esgotado após retries — mensagem já traduzida, não reembrulhar."""
+
+
+def _retry_after(err) -> float | None:
+    """Segundos do header Retry-After (teto 30s) ou None."""
+    try:
+        v = err.headers.get("Retry-After")
+        if v is None:
+            return None
+        return min(30.0, max(0.0, float(str(v).strip())))
+    except Exception:
+        return None
+
+
+def _urlopen_with_retry(req, timeout):
+    """urlopen com retry em 429/5xx (backoff 1s→2s→4s, honra Retry-After).
+
+    Retorna a resposta aberta. Esgotado o 429, levanta _RateLimited
+    (mensagem traduzida); demais falhas, a exceção original.
+    """
+    last = None
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            try:
+                e.close()
+            except Exception:
+                pass
+            last = e
+            if e.code not in RETRYABLE_CODES or attempt >= len(RETRY_DELAYS):
+                break
+            time.sleep(_retry_after(e) or RETRY_DELAYS[attempt])
+        except Exception:
+            raise
+    if last is not None and getattr(last, "code", None) == 429:
+        from lang import tr
+        raise _RateLimited(tr("rate_limited")) from last
+    raise last
 
 
 def search(q: str = "", categories: str = "111", sorting: str = "relevance",
@@ -79,8 +126,10 @@ def search(q: str = "", categories: str = "111", sorting: str = "relevance",
     url = API_BASE + "/search?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "wapa/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with _urlopen_with_retry(req, timeout=TIMEOUT) as r:
             payload = json.loads(r.read().decode("utf-8"))
+    except _RateLimited:
+        raise
     except Exception as e:
         raise ConnectionError(f"falha ao falar com wallhaven.cc: {e}") from e
     items = []
@@ -118,8 +167,10 @@ def details(wallpaper_id: str) -> dict:
     url = API_BASE + "/w/" + urllib.parse.quote(wid, safe="")
     req = urllib.request.Request(url, headers={"User-Agent": "wapa/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with _urlopen_with_retry(req, timeout=TIMEOUT) as r:
             payload = json.loads(r.read().decode("utf-8"))
+    except _RateLimited:
+        raise
     except Exception as e:
         raise ConnectionError(f"falha ao detalhar {wid}: {e}") from e
     data = payload.get("data", {}) if isinstance(payload, dict) else {}
@@ -134,37 +185,51 @@ def fetch_bytes(url: str, timeout: int = TIMEOUT) -> tuple[bytes, int]:
     """Baixa URL para memória. Retorna (bytes, total)."""
     req = urllib.request.Request(url, headers={"User-Agent": "wapa/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _urlopen_with_retry(req, timeout=timeout) as r:
             total = int(r.headers.get("Content-Length", 0) or 0)
             return r.read(), total
+    except _RateLimited:
+        raise
     except Exception as e:
         raise ConnectionError(f"falha ao baixar {url}: {e}") from e
 
 
 def download(url: str, dest_path: str, progress=None,
              timeout: int = 120) -> str:
-    """Baixa arquivo com progresso progress(feitos, total). Retorna dest_path."""
+    """Baixa arquivo com progresso progress(feitos, total). Retorna dest_path.
+
+    Em 429 persistente, recomeça do zero (sem resume), até 3 tentativas.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": "wapa/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            total = int(r.headers.get("Content-Length", 0) or 0)
-            done = 0
-            Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(dest_path, "wb") as f:
-                while True:
-                    chunk = r.read(256 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    done += len(chunk)
-                    if progress:
-                        progress(done, total)
-    except Exception as e:
+    for attempt in range(3):
         try:
-            os.unlink(dest_path)
-        except OSError:
-            pass
-        raise ConnectionError(f"falha ao baixar: {e}") from e
+            with _urlopen_with_retry(req, timeout=timeout) as r:
+                total = int(r.headers.get("Content-Length", 0) or 0)
+                done = 0
+                Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(dest_path, "wb") as f:
+                    while True:
+                        chunk = r.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if progress:
+                            progress(done, total)
+            return dest_path
+        except _RateLimited:
+            try:
+                os.unlink(dest_path)
+            except OSError:
+                pass
+            if attempt >= 2:
+                raise
+        except Exception as e:
+            try:
+                os.unlink(dest_path)
+            except OSError:
+                pass
+            raise ConnectionError(f"falha ao baixar: {e}") from e
     return dest_path
 
 

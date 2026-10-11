@@ -144,6 +144,7 @@ class WallhavenWindow(Adw.Window):
         self._syncing_page = False
         self._tags_cache: dict[str, list[dict]] = {}
         self._tags_gen = 0
+        self._listing_gen = 0
         self._full_win = None
 
         main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -200,6 +201,10 @@ class WallhavenWindow(Adw.Window):
         sfw = Gtk.Label(label="SFW")
         sfw.add_css_class("caption")
         filt.append(sfw)
+
+        self.chk_owned = Gtk.CheckButton(label=tr("hide_owned"))
+        self.chk_owned.connect("toggled", lambda *_: self._render_flow())
+        filt.append(self.chk_owned)
         main.append(filt)
 
         # ---- filtros avançados (dobrável) ----
@@ -397,7 +402,9 @@ class WallhavenWindow(Adw.Window):
         self._chip_css.load_from_string(
             "button.wh-tag { min-width: 0; min-height: 0; padding: 1px 8px; "
             "font-size: 0.8em; border-radius: 999px; }"
-            "textview.tag-view { background: transparent; }")
+            "textview.tag-view { background: transparent; }"
+            "label.wh-owned { background-color: rgba(0, 0, 0, 0.55); color: white; "
+            "border-radius: 999px; padding: 1px 7px; font-size: 0.8em; }")
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self._chip_css,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -407,6 +414,14 @@ class WallhavenWindow(Adw.Window):
         self.btn_dl.set_sensitive(False)
         self.btn_dl.connect("clicked", self.on_download)
         right.append(self.btn_dl)
+        self.btn_queue = Gtk.Button(label=tr("queue_page"))
+        self.btn_queue.set_sensitive(False)
+        self.btn_queue.connect("clicked", self.on_queue)
+        right.append(self.btn_queue)
+        self._queue_busy = False
+        self._queue_cancel = False
+        self._queue_total = 0
+        self._queue: list = []
         self.progress = Gtk.ProgressBar()
         self.progress.set_show_text(True)
         self.progress.set_visible(False)
@@ -663,7 +678,9 @@ class WallhavenWindow(Adw.Window):
         self._busy_search = True
         self.btn_dl.set_sensitive(False)
         self.btn_full.set_sensitive(False)
+        self.btn_queue.set_sensitive(False)
         self._tags_gen += 1
+        self._listing_gen += 1  # thumbs velhos param de baixar
         self._clear_chips()
         self.right.set_visible(False)
         self._set_left_status(tr("searching"))
@@ -703,14 +720,10 @@ class WallhavenWindow(Adw.Window):
         self.selected = None
         self.btn_dl.set_sensitive(False)
         self.btn_full.set_sensitive(False)
+        self.btn_queue.set_sensitive(False)
         self._tags_gen += 1
         self._clear_chips()
         self.right.set_visible(False)
-        child = self.flow.get_first_child()
-        while child:
-            nxt = child.get_next_sibling()
-            self.flow.remove(child)
-            child = nxt
         self._rebuilding = False
         if not self.items:
             if self.page > 1:
@@ -720,24 +733,118 @@ class WallhavenWindow(Adw.Window):
             self._set_left_status(tr("no_results"))
             self.lbl_count.set_text("")
             return
+        self._render_flow()
+
+    def _owned_path(self, it: dict):
+        """Destino local do item na pasta configurada, ou None."""
+        try:
+            folder = (self._get_config().get("folder", "") or "").strip()
+            if not folder or not it.get("full"):
+                return None
+            return Path(folder) / wh.filename_for(it.get("id", ""), it["full"])
+        except Exception:
+            return None
+
+    def _is_owned(self, it: dict) -> bool:
+        try:
+            p = self._owned_path(it)
+            return p is not None and p.is_file() and p.stat().st_size > 0
+        except Exception:
+            return False
+
+    def _visible_items(self) -> list[dict]:
+        try:
+            hide = self.chk_owned.get_active()
+        except Exception:
+            hide = False
+        if not hide:
+            return list(self.items)
+        return [it for it in self.items if not self._is_owned(it)]
+
+    def _render_flow(self):
+        """Reconstrói a grade da listagem atual (respeita ocultar-baixados)."""
+        self._rebuilding = True
+        try:
+            child = self.flow.get_first_child()
+            while child:
+                nxt = child.get_next_sibling()
+                self.flow.remove(child)
+                child = nxt
+        finally:
+            self._rebuilding = False
+        vis = self._visible_items()
+        if not vis:
+            self._set_left_status(tr("no_results"))
+            self.lbl_count.set_text("")
+            return
         self._set_left_status("")
-        self.lbl_count.set_text(tr("n_page", n=len(self.items)))
-        for it in self.items:
+        self.lbl_count.set_text(tr("n_page", n=len(vis)))
+        for it in vis:
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            over = Gtk.Overlay()
             ph = Gtk.Image.new_from_icon_name("image-loading")
             ph.set_pixel_size(48)
             ph.set_size_request(220, 150)
-            box.append(ph)
+            over.set_child(ph)
+            badge = Gtk.Label(label="✓")
+            badge.add_css_class("wh-owned")
+            badge.set_halign(Gtk.Align.START)
+            badge.set_valign(Gtk.Align.START)
+            badge.set_margin_start(4)
+            badge.set_margin_top(4)
+            badge.set_tooltip_text(tr("owned_tip"))
+            badge.set_visible(False)
+            over.add_overlay(badge)
+            box.append(over)
             name = Gtk.Label(label=f"{it['id']} • {it['resolution']}")
             name.set_ellipsize(3)
             box.append(name)
             box._wh_item = it
+            box._wh_badge = badge
             self.flow.insert(box, -1)
         _run_bg(self._load_thumbs)
 
+    def _mark_owned(self, item_id: str):
+        """Selo ✓ imediato (ou some a fileira se o filtro owned ativo)."""
+        try:
+            hide = self.chk_owned.get_active()
+        except Exception:
+            hide = False
+        child = self.flow.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            inner = child.get_child()
+            it = getattr(inner, "_wh_item", None)
+            if it and it.get("id") == item_id:
+                if hide:
+                    self._rebuilding = True
+                    try:
+                        self.flow.remove(child)
+                    finally:
+                        self._rebuilding = False
+                    vis = self._visible_items()
+                    if vis:
+                        self.lbl_count.set_text(tr("n_page", n=len(vis)))
+                    else:
+                        self._set_left_status(tr("no_results"))
+                        self.lbl_count.set_text("")
+                else:
+                    badge = getattr(inner, "_wh_badge", None)
+                    if badge is not None:
+                        try:
+                            badge.set_visible(True)
+                        except Exception:
+                            pass
+                break
+            child = nxt
+
     def _load_thumbs(self):
         scale = max(1, self.flow.get_scale_factor())
-        for it in self.items:
+        gen = self._listing_gen
+        items = self._visible_items()
+        for it in items:
+            if gen != self._listing_gen:
+                return  # listagem trocou: aborta sem gastar rate
             try:
                 dest = CACHE_DIR / f"{it['id']}-small.jpg"
                 if not dest.is_file() or dest.stat().st_size == 0:
@@ -755,8 +862,24 @@ class WallhavenWindow(Adw.Window):
             inner = child.get_child()
             it = getattr(inner, "_wh_item", None)
             if it and it["id"] == item_id:
-                old = inner.get_first_child()
-                if px is not None:
+                over = inner.get_first_child()
+                if isinstance(over, Gtk.Overlay):
+                    if px is not None:
+                        pic = Gtk.Picture.new_for_pixbuf(px)
+                        pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+                        pic.set_halign(Gtk.Align.CENTER)
+                        pic.set_valign(Gtk.Align.START)
+                        pic.set_can_shrink(True)
+                        pic.set_size_request(THUMB_W, THUMB_H)
+                        over.set_child(pic)
+                    badge = getattr(inner, "_wh_badge", None)
+                    if badge is not None:
+                        try:
+                            badge.set_visible(self._is_owned(it))
+                        except Exception:
+                            pass
+                elif px is not None:
+                    old = inner.get_first_child()
                     pic = Gtk.Picture.new_for_pixbuf(px)
                     pic.set_content_fit(Gtk.ContentFit.CONTAIN)
                     pic.set_halign(Gtk.Align.CENTER)
@@ -788,6 +911,9 @@ class WallhavenWindow(Adw.Window):
         self.info.set_text(f"{it['id']}\n{it['resolution']} • {it['category']} • {size}")
         self.btn_dl.set_sensitive(True)
         self.btn_full.set_sensitive(True)
+        if not self._queue_busy:
+            self.btn_queue.set_label(tr("queue_page"))
+            self.btn_queue.set_sensitive(True)
         self.right.set_visible(True)
         try:
             self.content.set_position(710)
@@ -832,6 +958,7 @@ class WallhavenWindow(Adw.Window):
         self._hide_preview()
 
     def _load_preview(self, it: dict):
+        wid = it.get("id", "")
         try:
             # original (inteira) em vez da large (o site corta as thumbs p/ 16:9)
             dest = CACHE_DIR / f"{it['id']}-orig.jpg"
@@ -840,13 +967,25 @@ class WallhavenWindow(Adw.Window):
                                              or it["thumb"])
                 dest.write_bytes(data)
                 wh.enforce_cache_limit(str(CACHE_DIR))
-                wh.enforce_cache_limit(str(CACHE_DIR))
-            GLib.idle_add(lambda: (self.preview.set_filename(str(dest)), False)[1])
+            GLib.idle_add(self._preview_done, wid, str(dest), None)
         except Exception as e:
-            GLib.idle_add(lambda: (self.status.set_text(tr("preview_fail", e=e)), False)[1])
+            GLib.idle_add(self._preview_done, wid, None, str(e))
+
+    def _preview_done(self, wid: str, path, err):
+        sel = self.selected if isinstance(self.selected, dict) else None
+        if sel is None or sel.get("id") != wid:
+            return False  # seleção trocou: descarta preview velho
+        if err:
+            self.status.set_text(tr("preview_fail", e=err))
+        elif path:
+            try:
+                self.preview.set_filename(path)
+            except Exception as e:
+                self.status.set_text(tr("preview_fail", e=e))
+        return False
 
     def on_download(self, _btn):
-        if not self.selected or self._busy_dl:
+        if not self.selected or self._busy_dl or self._queue_busy:
             return
         it = self.selected
         cfg = self._get_config()
@@ -867,9 +1006,9 @@ class WallhavenWindow(Adw.Window):
         self.progress.set_visible(True)
         self.progress.set_fraction(0.0)
         self.progress.set_text(tr("downloading"))
-        _run_bg(lambda: self._do_download(it["full"], dest))
+        _run_bg(lambda: self._do_download(it["full"], dest, it["id"]))
 
-    def _do_download(self, url: str, dest: str):
+    def _do_download(self, url: str, dest: str, wid: str = ""):
         try:
             def prog(done: int, total: int):
                 if total > 0:
@@ -878,11 +1017,11 @@ class WallhavenWindow(Adw.Window):
                                            self.progress.set_text(f"{done // 1024} / {total // 1024} KB"),
                                            False)[-1])
             wh.download(url, dest, progress=prog)
-            GLib.idle_add(self._download_done, dest, None)
+            GLib.idle_add(self._download_done, dest, None, wid)
         except Exception as e:
-            GLib.idle_add(self._download_done, dest, str(e))
+            GLib.idle_add(self._download_done, dest, str(e), wid)
 
-    def _download_done(self, dest: str, err):
+    def _download_done(self, dest: str, err, wid: str = ""):
         self._busy_dl = False
         self.progress.set_visible(False)
         self.btn_dl.set_sensitive(True)
@@ -890,8 +1029,92 @@ class WallhavenWindow(Adw.Window):
             self.status.set_text(tr("dl_fail", e=err))
         else:
             self.status.set_text(tr("downloaded", name=Path(dest).name))
+            if wid:
+                self._mark_owned(wid)
             try:
                 self._on_downloaded()
             except Exception:
                 pass
+        return False
+
+    # ---- fila: baixar página ----
+    def on_queue(self, _btn):
+        if self._queue_busy:
+            self._queue_cancel = True
+            return
+        if self._busy_dl:
+            return
+        cfg = self._get_config()
+        folder = (cfg.get("folder", "") or "").strip()
+        if not folder:
+            self.status.set_text(tr("no_folder"))
+            return
+        items = [it for it in self._visible_items() if not self._is_owned(it)]
+        if not items:
+            self.status.set_text(tr("queue_empty"))
+            return
+        self._queue = items
+        self._queue_total = len(items)
+        self._queue_busy = True
+        self._queue_cancel = False
+        self.btn_queue.set_label(tr("cancel"))
+        self.btn_dl.set_sensitive(False)
+        self.progress.set_visible(True)
+        self.progress.set_fraction(0.0)
+        _run_bg(self._run_queue)
+
+    def _run_queue(self):
+        folder = (self._get_config().get("folder", "") or "").strip()
+        total = self._queue_total
+        done = 0
+        for it in list(self._queue):
+            if self._queue_cancel:
+                break
+            if self._is_owned(it):
+                done += 1
+                continue
+            dest = str(Path(folder) / wh.filename_for(it["id"], it["full"]))
+            idx = done + 1
+            name = Path(dest).name
+
+            def prog(feito: int, total_b: int, _idx=idx, _name=name):
+                if total_b > 0:
+                    frac = ((_idx - 1) + min(1.0, feito / total_b)) / max(1, total)
+                    GLib.idle_add(lambda: (self.progress.set_fraction(frac),
+                                           self.progress.set_text(f"{_idx}/{total} • {_name}"),
+                                           False)[-1])
+            try:
+                wh.download(it["full"], dest, progress=prog)
+                done += 1
+                GLib.idle_add(self._queue_item_done, it["id"], None)
+            except wh._RateLimited as e:
+                GLib.idle_add(self._queue_item_done, it["id"], str(e))
+                break
+            except Exception as e:
+                GLib.idle_add(self._queue_item_done, it["id"], str(e))
+        GLib.idle_add(self._queue_finished, done, total, self._queue_cancel)
+
+    def _queue_item_done(self, wid: str, err):
+        if err:
+            self.status.set_text(tr("dl_fail", e=err))
+        elif wid:
+            self._mark_owned(wid)
+        return False
+
+    def _queue_finished(self, done: int, total: int, canceled: bool):
+        self._queue_busy = False
+        self._queue_cancel = False
+        self._queue = []
+        self.progress.set_visible(False)
+        self.btn_queue.set_label(tr("queue_page"))
+        self.btn_queue.set_sensitive(True)
+        self.btn_dl.set_sensitive(bool(self.selected))
+        if canceled:
+            self.status.set_text(tr("queue_canceled", d=done, n=total))
+        else:
+            self.status.set_text(tr("queue_done", d=done, n=total))
+        try:
+            self._on_downloaded()
+        except Exception:
+            pass
         return False

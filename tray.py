@@ -52,6 +52,63 @@ def load_cfg() -> dict:
         return {}
 
 
+def save_cfg(patch: dict) -> dict:
+    """Atualiza o config com patch e salva. Retorna o config final."""
+    cfg = load_cfg()
+    cfg.update(patch)
+    try:
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
+                               encoding="utf-8")
+    except OSError:
+        pass
+    return cfg
+
+
+SLIDE_MINUTES = (5, 15, 30, 60)
+SLIDE_SECONDS = (5, 10, 15, 30, 60)
+SLIDE_DEFAULT_SECS = 900
+SLIDE_VALID = frozenset([m * 60 for m in SLIDE_MINUTES] + list(SLIDE_SECONDS))
+_SLIDE_SRC = None
+
+
+def _slideshow_cfg() -> tuple[bool, int]:
+    cfg = load_cfg()
+    on = bool(cfg.get("slideshow_on", False))
+    secs = cfg.get("slideshow_secs", None)
+    if secs is None and "slideshow_mins" in cfg:
+        try:
+            secs = int(cfg["slideshow_mins"]) * 60  # migra config antigo
+        except (TypeError, ValueError):
+            secs = None
+    try:
+        secs = int(secs)
+    except (TypeError, ValueError):
+        secs = SLIDE_DEFAULT_SECS
+    if secs not in SLIDE_VALID:
+        secs = SLIDE_DEFAULT_SECS
+    return on, secs
+
+
+def _slideshow_tick():
+    _random(None)
+    return True  # mantém o timer
+
+
+def _slideshow_arm() -> None:
+    """(Re)arma o timer conforme o config. Idempotente."""
+    global _SLIDE_SRC
+    from gi.repository import GLib
+    if _SLIDE_SRC is not None:
+        try:
+            GLib.source_remove(_SLIDE_SRC)
+        except Exception:
+            pass
+        _SLIDE_SRC = None
+    on, secs = _slideshow_cfg()
+    if on:
+        _SLIDE_SRC = GLib.timeout_add_seconds(max(1, secs), _slideshow_tick)
+
+
 def _settings_for_apply() -> tuple[str, str]:
     cfg = load_cfg()
     folder = cfg.get("folder", str(Path.home() / "Pictures" / "Wallpapers"))
@@ -126,6 +183,32 @@ def _main_pid() -> int | None:
     return pid if str(MAIN_SCRIPT) in cmd else None
 
 
+def _on_slideshow_toggle(item):
+    try:
+        on = bool(item.get_active())
+    except Exception:
+        on = False
+    save_cfg({"slideshow_on": on})
+    _slideshow_arm()
+
+
+def _on_interval(item, secs: int):
+    try:
+        if not item.get_active():
+            return
+    except Exception:
+        return
+    cfg = load_cfg()
+    cfg.pop("slideshow_mins", None)
+    cfg["slideshow_secs"] = secs
+    try:
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
+                               encoding="utf-8")
+    except OSError:
+        pass
+    _slideshow_arm()
+
+
 def _quit(_item):
     pid = _main_pid()
     if pid is not None:
@@ -157,6 +240,42 @@ def build_menu() -> Gtk.Menu:
     item_rand = Gtk.MenuItem(label=tr("random"))
     item_rand.connect("activate", _random)
     menu.append(item_rand)
+
+    menu.append(Gtk.SeparatorMenuItem())
+
+    on, secs = _slideshow_cfg()
+    item_slide = Gtk.CheckMenuItem(label=tr("slideshow"))
+    item_slide.set_active(on)
+    item_slide.connect("toggled", _on_slideshow_toggle)
+    menu.append(item_slide)
+
+    item_every = Gtk.MenuItem(label=tr("slideshow_every"))
+    sub = Gtk.Menu()
+    group = None
+    item_min = Gtk.MenuItem(label=tr("slideshow_minutes"))
+    msub = Gtk.Menu()
+    for m in SLIDE_MINUTES:
+        ri = Gtk.RadioMenuItem.new_with_label(group, f"{m} min")
+        group = ri.get_group()
+        if m * 60 == secs:
+            ri.set_active(True)
+        ri.connect("toggled", _on_interval, m * 60)
+        msub.append(ri)
+    item_min.set_submenu(msub)
+    sub.append(item_min)
+    item_sec = Gtk.MenuItem(label=tr("slideshow_seconds"))
+    ssub = Gtk.Menu()
+    for s in SLIDE_SECONDS:
+        ri = Gtk.RadioMenuItem.new_with_label(group, f"{s} s")
+        group = ri.get_group()
+        if s == secs:
+            ri.set_active(True)
+        ri.connect("toggled", _on_interval, s)
+        ssub.append(ri)
+    item_sec.set_submenu(ssub)
+    sub.append(item_sec)
+    item_every.set_submenu(sub)
+    menu.append(item_every)
 
     menu.append(Gtk.SeparatorMenuItem())
 
@@ -203,6 +322,7 @@ def main() -> int:
     from gi.repository import GLib
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM,
                          lambda: (_cleanup(), Gtk.main_quit(), True)[-1])
+    _slideshow_arm()
     try:
         Gtk.main()
     finally:
