@@ -175,7 +175,16 @@ class WallpaperWindow(Adw.ApplicationWindow):
         self.left_status = Gtk.Label(label="", xalign=0)
         self.left_status.set_wrap(True)
         self.left_status.set_xalign(0)
-        left.append(self.left_status)
+        self.left_status.set_hexpand(True)
+        foot = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        foot.append(self.left_status)
+        self.btn_delete_all = Gtk.Button(label=tr("delete_all"))
+        self.btn_delete_all.add_css_class("destructive-action")
+        self.btn_delete_all.set_valign(Gtk.Align.CENTER)
+        self.btn_delete_all.set_sensitive(False)
+        self.btn_delete_all.connect("clicked", self._delete_all_confirm)
+        foot.append(self.btn_delete_all)
+        left.append(foot)
 
         # Direita: preview + opções + botões
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -323,12 +332,14 @@ class WallpaperWindow(Adw.ApplicationWindow):
             self.info.set_text(tr("no_images", folder=folder))
             self.status.set_text(tr("hint_folder"))
             self.left_status.set_text(tr("no_images", folder=folder))
+            self.btn_delete_all.set_sensitive(False)
             return
         for path in images:
             btn = self._thumb_button(path)
             self.flow.insert(btn, -1)
         self.info.set_text(tr("found", n=len(images)))
         self.left_status.set_text(tr("found", n=len(images)))
+        self.btn_delete_all.set_sensitive(True)
 
     def _thumb_button(self, path: str) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -442,6 +453,58 @@ class WallpaperWindow(Adw.ApplicationWindow):
             self.left_status.set_text(tr("no_images", folder=self.cfg["folder"]))
             self.right.set_visible(False)
             self._preview_path = None
+            self.btn_delete_all.set_sensitive(False)
+        self.status.set_text(msg)
+
+    def _delete_all_confirm(self, _btn):
+        images = wp.list_images(self.cfg["folder"])
+        if not images:
+            return
+        dlg = Adw.MessageDialog(transient_for=self, heading=tr("delete_all_title"),
+                                body=tr("delete_all_body", n=len(images),
+                                        folder=self.cfg["folder"]))
+        dlg.add_response("cancel", tr("cancel"))
+        dlg.add_response("delete", tr("delete_btn"))
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+        dlg.connect("response", self._on_delete_all_response)
+        dlg.present()
+
+    def _on_delete_all_response(self, _dlg, resp: str):
+        if resp == "delete":
+            self._delete_all()
+
+    def _delete_all(self):
+        folder = self.cfg["folder"]
+        images = wp.list_images(folder)
+        if not images:
+            return
+        try:
+            cur = wp.current_path()
+            wanted = {str(Path(p).resolve()) for p in images}
+            was_current = cur is not None and str(Path(cur).resolve()) in wanted
+        except OSError:
+            was_current = False
+        deleted, failed = 0, 0
+        first_err = None
+        for p in images:
+            try:
+                Path(p).unlink()
+                deleted += 1
+            except FileNotFoundError:
+                deleted += 1  # já sumiu: estado final é o mesmo
+            except OSError as e:
+                failed += 1
+                if first_err is None:
+                    first_err = e
+        self._thumbs.clear()
+        self.reload_folder()
+        msg = tr("deleted_all", n=deleted)
+        if was_current:
+            msg += tr("deleted_all_current")
+        if failed:
+            msg += tr("deleted_all_fail", f=failed, e=first_err)
         self.status.set_text(msg)
 
     def on_select(self, flow):

@@ -89,8 +89,20 @@ def _slideshow_cfg() -> tuple[bool, int]:
     return on, secs
 
 
+def _slideshow_mode() -> str:
+    mode = load_cfg().get("slideshow_mode", "random")
+    return mode if mode in ("random", "sequential") else "random"
+
+
 def _slideshow_tick():
-    _random(None)
+    try:
+        if _slideshow_mode() == "sequential":
+            folder, options = _settings_for_apply()
+            wp.step(folder, direction=1, mode="both", options=options)
+        else:
+            _random(None)
+    except Exception:
+        pass
     return True  # mantém o timer
 
 
@@ -181,6 +193,15 @@ def _main_pid() -> int | None:
     except OSError:
         return None
     return pid if str(MAIN_SCRIPT) in cmd else None
+
+
+def _on_mode(item, mode: str):
+    try:
+        if not item.get_active():
+            return
+    except Exception:
+        return
+    save_cfg({"slideshow_mode": mode})
 
 
 def _on_slideshow_toggle(item):
@@ -276,6 +297,21 @@ def build_menu() -> Gtk.Menu:
     sub.append(item_sec)
     item_every.set_submenu(sub)
     menu.append(item_every)
+
+    mode = _slideshow_mode()
+    item_order = Gtk.MenuItem(label=tr("slideshow_mode"))
+    osub = Gtk.Menu()
+    ogroup = None
+    for mkey, mlabel in (("random", tr("slideshow_random")),
+                         ("sequential", tr("slideshow_sequential"))):
+        ri = Gtk.RadioMenuItem.new_with_label(ogroup, mlabel)
+        ogroup = ri.get_group()
+        if mkey == mode:
+            ri.set_active(True)
+        ri.connect("toggled", _on_mode, mkey)
+        osub.append(ri)
+    item_order.set_submenu(osub)
+    menu.append(item_order)
 
     menu.append(Gtk.SeparatorMenuItem())
 

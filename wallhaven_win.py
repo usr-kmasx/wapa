@@ -413,11 +413,15 @@ class WallhavenWindow(Adw.Window):
         self.btn_dl.add_css_class("suggested-action")
         self.btn_dl.set_sensitive(False)
         self.btn_dl.connect("clicked", self.on_download)
-        right.append(self.btn_dl)
+        self.btn_dl.set_hexpand(True)
         self.btn_queue = Gtk.Button(label=tr("queue_page"))
         self.btn_queue.set_sensitive(False)
         self.btn_queue.connect("clicked", self.on_queue)
-        right.append(self.btn_queue)
+        self.btn_queue.set_hexpand(True)
+        dl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        dl_row.append(self.btn_dl)
+        dl_row.append(self.btn_queue)
+        right.append(dl_row)
         self._queue_busy = False
         self._queue_cancel = False
         self._queue_total = 0
@@ -835,8 +839,24 @@ class WallhavenWindow(Adw.Window):
                             badge.set_visible(True)
                         except Exception:
                             pass
+                sel = self.selected if isinstance(self.selected, dict) else None
+                if sel is not None and sel.get("id") == item_id:
+                    self._dl_btn_owned(True)
                 break
             child = nxt
+
+    def _dl_btn_owned(self, owned: bool):
+        """Botão Baixar: verde 'Baixado' se owned, senão azul 'Baixar'."""
+        try:
+            self.btn_dl.set_label(tr("downloaded_btn") if owned else tr("download"))
+            if owned:
+                self.btn_dl.remove_css_class("suggested-action")
+                self.btn_dl.add_css_class("success")
+            else:
+                self.btn_dl.remove_css_class("success")
+                self.btn_dl.add_css_class("suggested-action")
+        except Exception:
+            pass
 
     def _load_thumbs(self):
         scale = max(1, self.flow.get_scale_factor())
@@ -911,6 +931,10 @@ class WallhavenWindow(Adw.Window):
         self.info.set_text(f"{it['id']}\n{it['resolution']} • {it['category']} • {size}")
         self.btn_dl.set_sensitive(True)
         self.btn_full.set_sensitive(True)
+        if self._busy_dl:
+            self.btn_dl.set_label(tr("downloading"))
+        else:
+            self._dl_btn_owned(self._is_owned(it))
         if not self._queue_busy:
             self.btn_queue.set_label(tr("queue_page"))
             self.btn_queue.set_sensitive(True)
@@ -996,6 +1020,7 @@ class WallhavenWindow(Adw.Window):
         dest = str(Path(folder) / wh.filename_for(it["id"], it["full"]))
         if Path(dest).is_file() and Path(dest).stat().st_size > 0:
             self.status.set_text(tr("already", name=Path(dest).name))
+            self._mark_owned(it["id"])
             try:
                 self._on_downloaded()
             except Exception:
@@ -1003,6 +1028,7 @@ class WallhavenWindow(Adw.Window):
             return
         self._busy_dl = True
         self.btn_dl.set_sensitive(False)
+        self.btn_dl.set_label(tr("downloading"))
         self.progress.set_visible(True)
         self.progress.set_fraction(0.0)
         self.progress.set_text(tr("downloading"))
@@ -1025,6 +1051,8 @@ class WallhavenWindow(Adw.Window):
         self._busy_dl = False
         self.progress.set_visible(False)
         self.btn_dl.set_sensitive(True)
+        sel = self.selected if isinstance(self.selected, dict) else None
+        self._dl_btn_owned(bool(sel) and self._is_owned(sel))
         if err:
             self.status.set_text(tr("dl_fail", e=err))
         else:
