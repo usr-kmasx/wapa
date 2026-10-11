@@ -58,6 +58,9 @@ STRINGS = {
         "page_prev": "◀ Anterior",
         "page_next": "Próxima ▶",
         "page_lbl": "Página {p} de {l} ({t} resultados)",
+        "page_pre": "Página",
+        "page_suf": "de {l} ({t} resultados)",
+        "go_page_tip": "Digite a página e tecle Enter",
         "sel_hint": "Busque e clique numa imagem",
         "download": "Baixar para minha pasta",
         "no_results": "Nada encontrado — ajuste busca/filtros.",
@@ -69,6 +72,11 @@ STRINGS = {
         "already": "Já baixado: {name}",
         "dl_fail": "Download falhou: {e}",
         "preview_fail": "Preview falhou: {e}",
+        "n_page": "{n}/pág",
+        "close_preview": "Fechar preview",
+        "show_all_tags": "Mostrar todas as tags",
+        "fullscreen_tip": "Ver original em tela cheia",
+        "loading_full": "Carregando original…",
     },
     "en_US": {
         # main window
@@ -127,6 +135,9 @@ STRINGS = {
         "page_prev": "◀ Previous",
         "page_next": "Next ▶",
         "page_lbl": "Page {p} of {l} ({t} results)",
+        "page_pre": "Page",
+        "page_suf": "of {l} ({t} results)",
+        "go_page_tip": "Type the page and press Enter",
         "sel_hint": "Search and click an image",
         "download": "Download to my folder",
         "no_results": "Nothing found — adjust search/filters.",
@@ -138,6 +149,11 @@ STRINGS = {
         "already": "Already downloaded: {name}",
         "dl_fail": "Download failed: {e}",
         "preview_fail": "Preview failed: {e}",
+        "n_page": "{n}/pg",
+        "close_preview": "Close preview",
+        "show_all_tags": "Show all tags",
+        "fullscreen_tip": "View original fullscreen",
+        "loading_full": "Loading original…",
     },
 }
 

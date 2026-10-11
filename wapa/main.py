@@ -172,6 +172,10 @@ class WallpaperWindow(Adw.ApplicationWindow):
         self.flow.connect("selected-children-changed", self.on_select)
         self.scrolled.set_child(self.flow)
         left.append(self.scrolled)
+        self.left_status = Gtk.Label(label="", xalign=0)
+        self.left_status.set_wrap(True)
+        self.left_status.set_xalign(0)
+        left.append(self.left_status)
 
         # Direita: preview + opções + botões
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -223,9 +227,78 @@ class WallpaperWindow(Adw.ApplicationWindow):
 
         content.set_start_child(left)
         content.set_end_child(right)
+        self.content = content
+        self.right = right
+        self.right.set_visible(False)
+        self._suppress_select = False
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self._on_esc_key)
+        self.add_controller(key)
+        bg = Gtk.GestureClick()
+        bg.set_button(1)
+        bg.connect("pressed", self._on_grid_background)
+        self.scrolled.add_controller(bg)
         self.set_content(main)
 
         self.reload_folder()
+
+    def _hide_preview(self):
+        self.selected = None
+        self._preview_path = None
+        try:
+            self.preview.set_filename(None)
+        except Exception:
+            pass
+        self.right.set_visible(False)
+
+    def _on_esc_key(self, _ctl, keyval, _keycode, _state):
+        if keyval != Gdk.KEY_Escape:
+            return False
+        if not self.right.is_visible() and self.selected is None:
+            return False
+        self._suppress_select = True
+        try:
+            self.flow.unselect_all()
+        except Exception:
+            pass
+        finally:
+            self._suppress_select = False
+        self._hide_preview()
+        return True
+
+    def _pick_ignores(self, x: float, y: float) -> bool:
+        """True = clique em imagem/scrollbar: não fecha."""
+        try:
+            t = self.scrolled.pick(x, y, Gtk.PickFlags.DEFAULT)
+        except Exception:
+            return True
+        w = t
+        while w is not None and w is not self.scrolled:
+            if isinstance(w, Gtk.FlowBoxChild):
+                return True
+            if isinstance(w, Gtk.Scrollbar):
+                return True
+            try:
+                w = w.get_parent()
+            except Exception:
+                break
+        return False
+
+    def _on_grid_background(self, _gest, n_press: int, x: float, y: float):
+        if n_press != 1:
+            return
+        if self._pick_ignores(x, y):
+            return
+        if not self.right.is_visible() and self.selected is None:
+            return
+        self._suppress_select = True
+        try:
+            self.flow.unselect_all()
+        except Exception:
+            pass
+        finally:
+            self._suppress_select = False
+        self._hide_preview()
 
     # ---- pasta ----
     def reload_folder(self):
@@ -242,16 +315,20 @@ class WallpaperWindow(Adw.ApplicationWindow):
             child = nxt
         self.thumb_buttons.clear()
         self.selected = None
+        self._preview_path = None
+        self.right.set_visible(False)
 
         images = wp.list_images(folder)
         if not images:
             self.info.set_text(tr("no_images", folder=folder))
             self.status.set_text(tr("hint_folder"))
+            self.left_status.set_text(tr("no_images", folder=folder))
             return
         for path in images:
             btn = self._thumb_button(path)
             self.flow.insert(btn, -1)
         self.info.set_text(tr("found", n=len(images)))
+        self.left_status.set_text(tr("found", n=len(images)))
 
     def _thumb_button(self, path: str) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -354,15 +431,25 @@ class WallpaperWindow(Adw.ApplicationWindow):
             self.selected = None  # era fantasma: limpa
         if self.selected:
             self.info.set_text(Path(self.selected).name)
+            self.right.set_visible(True)
         elif remaining:
             self.info.set_text(tr("found", n=len(remaining)))
+            self.left_status.set_text(tr("found", n=len(remaining)))
+            self.right.set_visible(False)
+            self._preview_path = None
         else:
             self.info.set_text(tr("no_images", folder=self.cfg["folder"]))
+            self.left_status.set_text(tr("no_images", folder=self.cfg["folder"]))
+            self.right.set_visible(False)
+            self._preview_path = None
         self.status.set_text(msg)
 
     def on_select(self, flow):
+        if getattr(self, "_suppress_select", False):
+            return
         sel = flow.get_selected_children()
         if not sel:
+            self._hide_preview()
             return
         widget = sel[0].get_child()
         # FlowBoxChild -> nosso box
@@ -384,6 +471,7 @@ class WallpaperWindow(Adw.ApplicationWindow):
                 if self._preview_path == path:
                     self.preview.set_filename(None)
                     self._preview_path = None
+                self.right.set_visible(False)
                 return
             self.selected = path
             self._preview_path = path
@@ -392,6 +480,11 @@ class WallpaperWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self.info.set_text(Path(path).name)
+            self.right.set_visible(True)
+            try:
+                self.content.set_position(710)
+            except Exception:
+                pass
 
     # ---- config ----
     def on_option_changed(self, combo, _pspec):

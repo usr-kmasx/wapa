@@ -20,6 +20,113 @@ def _run_bg(fn):
     threading.Thread(target=fn, daemon=True).start()
 
 
+class FullscreenWindow(Adw.Window):
+    """Tela cheia com a foto ORIGINAL (full) — não o thumbnail."""
+
+    def __init__(self, parent, item: dict):
+        super().__init__(transient_for=parent, modal=True,
+                         title=f"{item.get('id', '')} — wapa")
+        self._item = dict(item)
+        self.set_default_size(1280, 800)
+
+        self._pic = Gtk.Picture()
+        self._pic.set_can_shrink(True)
+        self._pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self._pic.set_hexpand(True)
+        self._pic.set_vexpand(True)
+
+        overlay = Gtk.Overlay()
+        overlay.set_child(self._pic)
+        overlay.set_vexpand(True)
+
+        load_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        load_box.set_halign(Gtk.Align.CENTER)
+        load_box.set_valign(Gtk.Align.CENTER)
+        self._spinner = Gtk.Spinner(spinning=True)
+        self._spinner.set_size_request(48, 48)
+        self._spinner.set_halign(Gtk.Align.CENTER)
+        load_box.append(self._spinner)
+        self._status = Gtk.Label(label=tr("loading_full"))
+        self._status.add_css_class("osd")
+        load_box.append(self._status)
+        overlay.add_overlay(load_box)
+        self._load_box = load_box
+
+        close_btn = Gtk.Button.new_from_icon_name("view-restore-symbolic")
+        close_btn.add_css_class("osd")
+        close_btn.set_halign(Gtk.Align.END)
+        close_btn.set_valign(Gtk.Align.START)
+        close_btn.set_margin_top(12)
+        close_btn.set_margin_end(12)
+        close_btn.set_tooltip_text(tr("fullscreen_tip"))
+        close_btn.connect("clicked", lambda _b: self.close())
+        overlay.add_overlay(close_btn)
+
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self._on_key)
+        self.add_controller(key)
+
+        click = Gtk.GestureClick()
+        click.set_button(0)
+        click.connect("pressed", self._on_double_click)
+        self._pic.add_controller(click)
+
+        self.set_content(overlay)
+        self.fullscreen()
+        _run_bg(self._load_full)
+
+    def _on_key(self, _ctl, keyval, _keycode, _state):
+        if keyval == Gdk.KEY_Escape:
+            self.close()
+            return True
+        return False
+
+    def _on_double_click(self, gest, _n_press, _x, _y):
+        if _n_press == 2:
+            self.close()
+
+    def _load_full(self):
+        it = self._item
+        url = it.get("full") or it.get("thumb_original") or it.get("thumb_large") \
+            or it.get("thumb") or ""
+        if not url:
+            GLib.idle_add(self._done, None, "URL vazia")
+            return
+        try:
+            ext = wh.filename_for(it.get("id", "full"), url).rsplit(".", 1)[-1]
+            dest = CACHE_DIR / f"{it.get('id', 'full')}-full.{ext}"
+            if not (dest.is_file() and dest.stat().st_size > 0):
+                CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                wh.download(url, str(dest))
+                wh.enforce_cache_limit(str(CACHE_DIR))
+            GLib.idle_add(self._done, str(dest), None)
+        except Exception as e:
+            GLib.idle_add(self._done, None, str(e))
+
+    def _done(self, path, err):
+        try:
+            self._spinner.stop()
+            self._load_box.set_visible(False)
+        except Exception:
+            pass
+        if err:
+            try:
+                self._load_box.set_visible(True)
+                self._status.set_text(tr("preview_fail", e=err))
+            except Exception:
+                pass
+        elif path:
+            try:
+                self._pic.set_filename(path)
+            except Exception as e:
+                try:
+                    self._load_box.set_visible(True)
+                    self._status.set_text(tr("preview_fail", e=e))
+                except Exception:
+                    pass
+        return False
+
+
 class WallhavenWindow(Adw.Window):
     def __init__(self, app, get_config, on_downloaded):
         super().__init__(application=app, title="Wallhaven — wapa")
@@ -34,6 +141,10 @@ class WallhavenWindow(Adw.Window):
         self._busy_search = False
         self._busy_dl = False
         self._rebuilding = False
+        self._syncing_page = False
+        self._tags_cache: dict[str, list[dict]] = {}
+        self._tags_gen = 0
+        self._full_win = None
 
         main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         main.append(Adw.HeaderBar())
@@ -195,13 +306,46 @@ class WallhavenWindow(Adw.Window):
         nav.set_halign(Gtk.Align.CENTER)
         self.btn_prev = Gtk.Button(label=tr("page_prev"))
         self.btn_prev.connect("clicked", lambda _b: self.search(self.page - 1))
-        self.lbl_page = Gtk.Label(label=tr("page_lbl", p=1, l=1, t=0))
+        self.page_pre = Gtk.Label(label=tr("page_pre"))
+        self.page_pre.set_valign(Gtk.Align.CENTER)
+        self.spin_page = Gtk.Entry()
+        self.spin_page.set_text("1")
+        self.spin_page.set_width_chars(2)
+        self.spin_page.set_max_width_chars(2)
+        self.spin_page.set_max_length(4)
+        self.spin_page.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        self.spin_page.set_alignment(0.5)
+        self.spin_page.set_halign(Gtk.Align.CENTER)
+        self.spin_page.set_valign(Gtk.Align.CENTER)
+        self.spin_page.set_tooltip_text(tr("go_page_tip"))
+        self.spin_page.add_css_class("page-field")
+        self._page_css = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self._page_css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._apply_page_width(1)
+        self.spin_page.connect("activate", lambda _e: self._go_spin_page())
+        self.lbl_suf = Gtk.Label(label=tr("page_suf", l=1, t=0))
+        self.lbl_suf.set_valign(Gtk.Align.CENTER)
         self.btn_next = Gtk.Button(label=tr("page_next"))
         self.btn_next.connect("clicked", lambda _b: self.search(self.page + 1))
+        self.lbl_count = Gtk.Label(label="")
+        self.lbl_count.set_valign(Gtk.Align.CENTER)
+        self.lbl_count.add_css_class("caption")
+        self.lbl_count.add_css_class("dim-label")
         nav.append(self.btn_prev)
-        nav.append(self.lbl_page)
+        nav.append(self.page_pre)
+        nav.append(self.spin_page)
+        nav.append(self.lbl_suf)
+        nav.append(self.lbl_count)
         nav.append(self.btn_next)
         left.append(nav)
+        self.left_status = Gtk.Label(label="")
+        self.left_status.set_wrap(True)
+        self.left_status.set_xalign(0)
+        self.left_status.set_halign(Gtk.Align.CENTER)
+        self.left_status.set_visible(False)
+        left.append(self.left_status)
         content.set_start_child(left)
 
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -215,11 +359,49 @@ class WallhavenWindow(Adw.Window):
         self.preview.set_content_fit(Gtk.ContentFit.CONTAIN)
         frame = Gtk.Frame()
         frame.set_child(self.preview)
-        right.append(frame)
+        preview_overlay = Gtk.Overlay()
+        preview_overlay.set_child(frame)
+        self.btn_full = Gtk.Button.new_from_icon_name("view-fullscreen-symbolic")
+        self.btn_full.add_css_class("osd")
+        self.btn_full.set_tooltip_text(tr("fullscreen_tip"))
+        self.btn_full.set_sensitive(False)
+        self.btn_full.connect("clicked", self.on_fullscreen)
+        self.btn_close_preview = Gtk.Button.new_from_icon_name("window-close-symbolic")
+        self.btn_close_preview.add_css_class("osd")
+        self.btn_close_preview.set_tooltip_text(tr("close_preview"))
+        self.btn_close_preview.connect("clicked", self.on_close_preview)
+        overlay_btns = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        overlay_btns.set_halign(Gtk.Align.END)
+        overlay_btns.set_valign(Gtk.Align.START)
+        overlay_btns.set_margin_top(6)
+        overlay_btns.set_margin_end(6)
+        overlay_btns.append(self.btn_full)
+        overlay_btns.append(self.btn_close_preview)
+        preview_overlay.add_overlay(overlay_btns)
+        right.append(preview_overlay)
         self.info = Gtk.Label(label=tr("sel_hint"))
         self.info.set_wrap(True)
         self.info.set_xalign(0)
         right.append(self.info)
+        self.tags_view = Gtk.TextView()
+        self.tags_view.set_editable(False)
+        self.tags_view.set_cursor_visible(False)
+        self.tags_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.tags_view.add_css_class("tag-view")
+        try:
+            self.tags_view.set_cursor_from_name("default")
+        except Exception:
+            pass
+        self._chip_buttons: list = []
+        self._chip_css = Gtk.CssProvider()
+        self._chip_css.load_from_string(
+            "button.wh-tag { min-width: 0; min-height: 0; padding: 1px 8px; "
+            "font-size: 0.8em; border-radius: 999px; }"
+            "textview.tag-view { background: transparent; }")
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self._chip_css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        right.append(self.tags_view)
         self.btn_dl = Gtk.Button(label=tr("download"))
         self.btn_dl.add_css_class("suggested-action")
         self.btn_dl.set_sensitive(False)
@@ -234,10 +416,167 @@ class WallhavenWindow(Adw.Window):
         self.status.set_xalign(0)
         right.append(self.status)
         content.set_end_child(right)
+        self.content = content
+        self.right = right
+        self.right.set_visible(False)
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self._on_esc_key)
+        self.add_controller(key)
+        bg = Gtk.GestureClick()
+        bg.set_button(1)
+        bg.connect("pressed", self._on_grid_background)
+        self.scrolled.add_controller(bg)
 
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         _run_bg(lambda: wh.enforce_cache_limit(str(CACHE_DIR)))  # poda inicial de 50 MB
         self.search(1)
+
+    def _hide_preview(self):
+        self.selected = None
+        self.btn_dl.set_sensitive(False)
+        self.btn_full.set_sensitive(False)
+        self._tags_gen += 1
+        self._clear_chips()
+        try:
+            self.preview.set_filename(None)
+        except Exception:
+            pass
+        self.right.set_visible(False)
+
+    def _clear_chips(self):
+        try:
+            for w in getattr(self, "_chip_buttons", []):
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._chip_buttons = []
+        try:
+            self.tags_view.get_buffer().set_text("")
+        except Exception:
+            pass
+
+    def _show_chips(self, tags: list[dict], expanded: bool = False):
+        self._clear_chips()
+        try:
+            buf = self.tags_view.get_buffer()
+            names = [t for t in (tags or []) if t.get("name")]
+            shown = names if expanded else names[:15]
+            for i, t in enumerate(shown):
+                name = t["name"]
+                if i > 0:
+                    buf.insert(buf.get_end_iter(), " ")
+                anchor = buf.create_child_anchor(buf.get_end_iter())
+                b = Gtk.Button(label=name)
+                b.add_css_class("pill")
+                b.add_css_class("wh-tag")
+                b.set_tooltip_text(name)
+                try:
+                    b.set_cursor_from_name("pointer")
+                except Exception:
+                    pass
+                b.connect("clicked", self._on_chip, name)
+                self.tags_view.add_child_at_anchor(b, anchor)
+                self._chip_buttons.append(b)
+            if len(names) > 15 and not expanded:
+                buf.insert(buf.get_end_iter(), "  ")
+                anchor = buf.create_child_anchor(buf.get_end_iter())
+                more = Gtk.Button(label=f"+{len(names) - 15}")
+                more.add_css_class("pill")
+                more.add_css_class("wh-tag")
+                more.set_tooltip_text(tr("show_all_tags"))
+                try:
+                    more.set_cursor_from_name("pointer")
+                except Exception:
+                    pass
+                more.connect("clicked", lambda _b: self._show_chips(tags, True))
+                self.tags_view.add_child_at_anchor(more, anchor)
+                self._chip_buttons.append(more)
+        except Exception:
+            pass
+
+    def _on_chip(self, _btn, name: str):
+        try:
+            self.entry_q.set_text(name)
+        except Exception:
+            pass
+        self.search(1)
+
+    def _load_tags(self, wid: str, gen: int):
+        try:
+            tags = wh.details(wid)["tags"]
+            GLib.idle_add(self._tags_done, wid, gen, tags)
+        except Exception:
+            GLib.idle_add(self._tags_done, wid, gen, None)
+
+    def _tags_done(self, wid: str, gen: int, tags):
+        if (gen != self._tags_gen or tags is None or self.selected is None
+                or not isinstance(self.selected, dict)
+                or self.selected.get("id") != wid):
+            return False
+        self._tags_cache[wid] = tags
+        self._show_chips(tags)
+        return False
+
+    def _set_left_status(self, text: str):
+        self.left_status.set_text(text)
+        self.left_status.set_visible(bool(text.strip()))
+
+    def _on_esc_key(self, _ctl, keyval, _keycode, _state):
+        if keyval != Gdk.KEY_Escape:
+            return False
+        try:
+            if self.entry_q.has_focus():
+                return False
+        except Exception:
+            pass
+        if not self.right.is_visible() and self.selected is None:
+            return False
+        self._rebuilding = True
+        try:
+            self.flow.unselect_all()
+        except Exception:
+            pass
+        finally:
+            self._rebuilding = False
+        self._hide_preview()
+        return True
+
+    def _pick_ignores(self, x: float, y: float) -> bool:
+        """True = clique em imagem/scrollbar: não fecha."""
+        try:
+            t = self.scrolled.pick(x, y, Gtk.PickFlags.DEFAULT)
+        except Exception:
+            return True
+        w = t
+        while w is not None and w is not self.scrolled:
+            if isinstance(w, Gtk.FlowBoxChild):
+                return True
+            if isinstance(w, Gtk.Scrollbar):
+                return True
+            try:
+                w = w.get_parent()
+            except Exception:
+                break
+        return False
+
+    def _on_grid_background(self, _gest, n_press: int, x: float, y: float):
+        if n_press != 1:
+            return
+        if self._pick_ignores(x, y):
+            return
+        if not self.right.is_visible() and self.selected is None:
+            return
+        self._rebuilding = True
+        try:
+            self.flow.unselect_all()
+        except Exception:
+            pass
+        finally:
+            self._rebuilding = False
+        self._hide_preview()
 
     # ---- filtros ----
     def _sync_toprange(self, *args):
@@ -283,6 +622,36 @@ class WallhavenWindow(Adw.Window):
         }
 
     # ---- busca ----
+    def _apply_page_width(self, last_page: int):
+        """Trava a largura do campo nos dígitos (min + max em chars)."""
+        digits = min(4, max(2, len(str(max(1, int(last_page))))))
+        try:
+            self.spin_page.set_width_chars(digits)
+            self.spin_page.set_max_width_chars(digits)
+            self._page_css.load_from_string(
+                "entry.page-field { min-width: 0; "
+                "padding-left: 4px; padding-right: 4px; }")
+        except Exception:
+            pass
+
+    def _go_spin_page(self):
+        """Enter no campo da página: pula p/ a página digitada."""
+        if getattr(self, "_syncing_page", False) or self._busy_search:
+            return
+        try:
+            v = int(self.spin_page.get_text().strip())
+        except Exception:
+            v = self.page
+        v = max(1, min(int(v), max(1, self.last_page)))
+        if v == self.page:
+            self._syncing_page = True
+            try:
+                self.spin_page.set_text(str(self.page))
+            finally:
+                self._syncing_page = False
+            return
+        self.search(v)
+
     def search(self, page: int):
         if self._busy_search:
             return
@@ -293,7 +662,12 @@ class WallhavenWindow(Adw.Window):
             self.seed = ""  # nova busca: seed fresco do random
         self._busy_search = True
         self.btn_dl.set_sensitive(False)
-        self.status.set_text(tr("searching"))
+        self.btn_full.set_sensitive(False)
+        self._tags_gen += 1
+        self._clear_chips()
+        self.right.set_visible(False)
+        self._set_left_status(tr("searching"))
+        self.lbl_count.set_text("")
         params = self._params(page)
         _run_bg(lambda: self._do_search(params))
 
@@ -307,19 +681,31 @@ class WallhavenWindow(Adw.Window):
     def _show_results(self, res, err):
         self._busy_search = False
         if err or res is None:
-            self.status.set_text(tr("error", e=err))
+            self._set_left_status(tr("error", e=err))
+            self.lbl_count.set_text("")
+            self.right.set_visible(False)
             return
         self.items = res["items"]
         self.page = res["page"]
         self.last_page = res["last_page"]
         if res.get("seed"):
             self.seed = res["seed"]  # fixa o embaralhamento entre páginas
-        self.lbl_page.set_text(tr("page_lbl", p=res["page"], l=res["last_page"], t=res["total"]))
+        self._syncing_page = True
+        try:
+            self._apply_page_width(self.last_page)
+            self.spin_page.set_text(str(self.page))
+            self.lbl_suf.set_text(tr("page_suf", l=self.last_page, t=res["total"]))
+        finally:
+            self._syncing_page = False
         self.btn_prev.set_sensitive(self.page > 1)
         self.btn_next.set_sensitive(self.page < self.last_page)
         self._rebuilding = True  # limpeza/inserção não devem disparar seleção
         self.selected = None
         self.btn_dl.set_sensitive(False)
+        self.btn_full.set_sensitive(False)
+        self._tags_gen += 1
+        self._clear_chips()
+        self.right.set_visible(False)
         child = self.flow.get_first_child()
         while child:
             nxt = child.get_next_sibling()
@@ -331,9 +717,11 @@ class WallhavenWindow(Adw.Window):
                 # filtro restrito esvaziou a página atual: recomeça da 1
                 self.search(1)
                 return
-            self.status.set_text(tr("no_results"))
+            self._set_left_status(tr("no_results"))
+            self.lbl_count.set_text("")
             return
-        self.status.set_text(tr("n_results", n=len(self.items)))
+        self._set_left_status("")
+        self.lbl_count.set_text(tr("n_page", n=len(self.items)))
         for it in self.items:
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             ph = Gtk.Image.new_from_icon_name("image-loading")
@@ -393,13 +781,55 @@ class WallhavenWindow(Adw.Window):
             return
         it = self._find_item(flow)
         if not it:
+            self._hide_preview()
             return
         self.selected = it
         size = f"{it['file_size'] // 1024} KB" if it["file_size"] else "?"
         self.info.set_text(f"{it['id']}\n{it['resolution']} • {it['category']} • {size}")
         self.btn_dl.set_sensitive(True)
+        self.btn_full.set_sensitive(True)
+        self.right.set_visible(True)
+        try:
+            self.content.set_position(710)
+        except Exception:
+            pass
         self.preview.set_filename(None)
         _run_bg(lambda: self._load_preview(it))
+        self._tags_gen += 1
+        gen = self._tags_gen
+        self._clear_chips()
+        cached = self._tags_cache.get(it.get("id", ""))
+        if cached is not None:
+            self._show_chips(cached)
+        else:
+            _run_bg(lambda: self._load_tags(it.get("id", ""), gen))
+
+    def on_fullscreen(self, _btn):
+        if not self.selected:
+            return
+        try:
+            if self._full_win is not None:
+                self._full_win.destroy()
+        except Exception:
+            pass
+        self._full_win = None
+        self._full_win = FullscreenWindow(self, self.selected)
+        self._full_win.connect("close-request", self._on_full_closed)
+        self._full_win.present()
+
+    def _on_full_closed(self, _win):
+        self._full_win = None
+        return False
+
+    def on_close_preview(self, _btn):
+        self._rebuilding = True
+        try:
+            self.flow.unselect_all()
+        except Exception:
+            pass
+        finally:
+            self._rebuilding = False
+        self._hide_preview()
 
     def _load_preview(self, it: dict):
         try:

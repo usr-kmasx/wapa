@@ -107,6 +107,29 @@ def search(q: str = "", categories: str = "111", sorting: str = "relevance",
     }
 
 
+def details(wallpaper_id: str) -> dict:
+    """Detalhe de um wallpaper: {'id', 'tags': [{'id', 'name'}]}.
+
+    Sem apikey: NSFW bloqueado (wapa é SFW, ok).
+    """
+    wid = (wallpaper_id or "").strip()
+    if not wid:
+        raise ValueError("id vazio")
+    url = API_BASE + "/w/" + urllib.parse.quote(wid, safe="")
+    req = urllib.request.Request(url, headers={"User-Agent": "wapa/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        raise ConnectionError(f"falha ao detalhar {wid}: {e}") from e
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    tags = []
+    for t in data.get("tags", []) or []:
+        if isinstance(t, dict) and t.get("name"):
+            tags.append({"id": t.get("id", ""), "name": str(t["name"])})
+    return {"id": data.get("id", wid), "tags": tags}
+
+
 def fetch_bytes(url: str, timeout: int = TIMEOUT) -> tuple[bytes, int]:
     """Baixa URL para memória. Retorna (bytes, total)."""
     req = urllib.request.Request(url, headers={"User-Agent": "wapa/1.0"})
