@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=wapa
+Comment=Trocar wallpaper do GNOME
+Comment[pt_BR]=Trocar wallpaper do GNOME
+Comment[en_US]=Change GNOME wallpaper
+Exec=python3 /home/usr/Projects/main.py
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Categories=GTK;GNOME;Settings;
+StartupNotify=true
