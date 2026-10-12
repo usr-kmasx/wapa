@@ -474,7 +474,7 @@ class WallhavenWindow(Adw.Window):
         self._clear_chips()
         try:
             names = [t for t in (tags or []) if t.get("name")]
-            shown = names if expanded else names[:15]
+            shown = names if expanded else names[:7]
             for t in shown:
                 name = t["name"]
                 b = Gtk.Button(label=f"#{name}")
@@ -489,8 +489,8 @@ class WallhavenWindow(Adw.Window):
                     pass
                 b.connect("clicked", self._on_chip, name)
                 self.tags_flow.append(b)
-            if len(names) > 15 and not expanded:
-                more = Gtk.Button(label=f"+{len(names) - 15}")
+            if len(names) > 7 and not expanded:
+                more = Gtk.Button(label=f"+{len(names) - 7}")
                 more.add_css_class("pill")
                 more.add_css_class("wh-tag")
                 more.set_halign(Gtk.Align.CENTER)
@@ -794,6 +794,12 @@ class WallhavenWindow(Adw.Window):
             box._wh_item = it
             box._wh_badge = badge
             self.flow.insert(box, -1)
+        try:  # vista nova: volta ao topo
+            vadj = self.scrolled.get_vadjustment()
+            if vadj is not None:
+                vadj.set_value(vadj.get_lower())
+        except Exception:
+            pass
         _run_bg(self._load_thumbs)
 
     def _mark_owned(self, item_id: str):
