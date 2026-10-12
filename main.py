@@ -692,6 +692,14 @@ class WallpaperApp(Adw.Application):
 
 def main():
     GLib.set_prgname(APP_SYSNAME)
+    try:  # carimbo p/ saber qual código está rodando (nada faz além de logar)
+        sha = subprocess.run(
+            ["git", "-C", str(BASE_DIR), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+        if sha:
+            print(f"wapa {sha} — {BASE_DIR}", flush=True)
+    except Exception:
+        pass
     cfg = load_config()
     set_lang(cfg.get("lang", "pt_BR"))
     # garante pasta padrão só em runtime (não cria nada fora na instalação)

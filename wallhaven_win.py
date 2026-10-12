@@ -288,6 +288,7 @@ class WallhavenWindow(Adw.Window):
         content = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         content.set_position(710)
         content.set_vexpand(True)
+        content.set_resize_start_child(True)
         main.append(content)
 
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -297,8 +298,8 @@ class WallhavenWindow(Adw.Window):
         self.scrolled = Gtk.ScrolledWindow()
         self.scrolled.set_vexpand(True)
         self.flow = Gtk.FlowBox()
-        self.flow.set_max_children_per_line(4)
-        self.flow.set_homogeneous(True)
+        self.flow.set_max_children_per_line(30)
+        self.flow.set_homogeneous(False)
         self.flow.set_column_spacing(12)
         self.flow.set_row_spacing(12)
         self.flow.set_valign(Gtk.Align.START)  # fileiras com altura natural, sem esticar
@@ -388,27 +389,23 @@ class WallhavenWindow(Adw.Window):
         self.info.set_wrap(True)
         self.info.set_xalign(0)
         right.append(self.info)
-        self.tags_view = Gtk.TextView()
-        self.tags_view.set_editable(False)
-        self.tags_view.set_cursor_visible(False)
-        self.tags_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.tags_view.add_css_class("tag-view")
-        try:
-            self.tags_view.set_cursor_from_name("default")
-        except Exception:
-            pass
-        self._chip_buttons: list = []
+        self.tags_flow = Gtk.FlowBox()
+        self.tags_flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.tags_flow.set_homogeneous(False)
+        self.tags_flow.set_max_children_per_line(20)
+        self.tags_flow.set_column_spacing(6)
+        self.tags_flow.set_row_spacing(6)
         self._chip_css = Gtk.CssProvider()
         self._chip_css.load_from_string(
-            "button.wh-tag { min-width: 0; min-height: 0; padding: 1px 8px; "
-            "font-size: 0.8em; border-radius: 999px; }"
-            "textview.tag-view { background: transparent; }"
+            "button.wh-tag { min-width: 0; min-height: 0; padding: 2px 10px; "
+            "font-size: 0.85em; border-radius: 999px; "
+            "background-color: rgba(255, 255, 255, 0.08); color: #e8e8e8; }"
             "label.wh-owned { background-color: rgba(0, 0, 0, 0.55); color: white; "
             "border-radius: 999px; padding: 1px 7px; font-size: 0.8em; }")
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self._chip_css,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        right.append(self.tags_view)
+        right.append(self.tags_flow)
         self.btn_dl = Gtk.Button(label=tr("download"))
         self.btn_dl.add_css_class("suggested-action")
         self.btn_dl.set_sensitive(False)
@@ -463,56 +460,47 @@ class WallhavenWindow(Adw.Window):
         self.right.set_visible(False)
 
     def _clear_chips(self):
+        # remove filhos do FlowBox (padrão da grade: sem histórico de crash)
         try:
-            for w in getattr(self, "_chip_buttons", []):
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        self._chip_buttons = []
-        try:
-            self.tags_view.get_buffer().set_text("")
+            child = self.tags_flow.get_first_child()
+            while child:
+                nxt = child.get_next_sibling()
+                self.tags_flow.remove(child)
+                child = nxt
         except Exception:
             pass
 
     def _show_chips(self, tags: list[dict], expanded: bool = False):
         self._clear_chips()
         try:
-            buf = self.tags_view.get_buffer()
             names = [t for t in (tags or []) if t.get("name")]
             shown = names if expanded else names[:15]
-            for i, t in enumerate(shown):
+            for t in shown:
                 name = t["name"]
-                if i > 0:
-                    buf.insert(buf.get_end_iter(), " ")
-                anchor = buf.create_child_anchor(buf.get_end_iter())
-                b = Gtk.Button(label=name)
+                b = Gtk.Button(label=f"#{name}")
                 b.add_css_class("pill")
                 b.add_css_class("wh-tag")
                 b.set_tooltip_text(name)
+                b.set_halign(Gtk.Align.CENTER)
+                b.set_hexpand(False)
                 try:
                     b.set_cursor_from_name("pointer")
                 except Exception:
                     pass
                 b.connect("clicked", self._on_chip, name)
-                self.tags_view.add_child_at_anchor(b, anchor)
-                self._chip_buttons.append(b)
+                self.tags_flow.append(b)
             if len(names) > 15 and not expanded:
-                buf.insert(buf.get_end_iter(), "  ")
-                anchor = buf.create_child_anchor(buf.get_end_iter())
                 more = Gtk.Button(label=f"+{len(names) - 15}")
                 more.add_css_class("pill")
                 more.add_css_class("wh-tag")
-                more.set_tooltip_text(tr("show_all_tags"))
+                more.set_halign(Gtk.Align.CENTER)
+                more.set_hexpand(False)
                 try:
                     more.set_cursor_from_name("pointer")
                 except Exception:
                     pass
                 more.connect("clicked", lambda _b: self._show_chips(tags, True))
-                self.tags_view.add_child_at_anchor(more, anchor)
-                self._chip_buttons.append(more)
+                self.tags_flow.append(more)
         except Exception:
             pass
 
