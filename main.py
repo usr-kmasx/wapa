@@ -544,10 +544,6 @@ class WallpaperWindow(Adw.ApplicationWindow):
                 pass
             self.info.set_text(Path(path).name)
             self.right.set_visible(True)
-            try:
-                self.content.set_position(710)
-            except Exception:
-                pass
 
     # ---- config ----
     def on_option_changed(self, combo, _pspec):

@@ -7,6 +7,11 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk, GLib, Gdk
+try:
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+except Exception:
+    GdkPixbuf = None
 
 import wallpaper as wp
 import wallhaven as wh
@@ -308,7 +313,12 @@ class WallhavenWindow(Adw.Window):
         self.scrolled.set_child(self.flow)
         left.append(self.scrolled)
 
-        nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        nav = Gtk.FlowBox()
+        nav.set_selection_mode(Gtk.SelectionMode.NONE)
+        nav.set_homogeneous(False)
+        nav.set_max_children_per_line(20)
+        nav.set_column_spacing(6)
+        nav.set_row_spacing(6)
         nav.set_halign(Gtk.Align.CENTER)
         self.btn_prev = Gtk.Button(label=tr("page_prev"))
         self.btn_prev.connect("clicked", lambda _b: self.search(self.page - 1))
@@ -358,15 +368,20 @@ class WallhavenWindow(Adw.Window):
         right.set_margin_start(6)
         right.set_margin_end(12)
         right.set_margin_bottom(12)
-        right.set_size_request(300, -1)
+        right.set_size_request(200, -1)
         self.preview = Gtk.Picture()
-        self.preview.set_size_request(280, 180)
+        self.preview.set_size_request(120, 80)
         self.preview.set_can_shrink(True)
+        self.preview.set_hexpand(True)
         self.preview.set_content_fit(Gtk.ContentFit.CONTAIN)
         frame = Gtk.Frame()
+        frame.add_css_class("preview-frame")
+        frame.set_hexpand(True)
         frame.set_child(self.preview)
         preview_overlay = Gtk.Overlay()
+        preview_overlay.set_hexpand(True)
         preview_overlay.set_child(frame)
+        self._preview_overlay = preview_overlay
         self.btn_full = Gtk.Button.new_from_icon_name("view-fullscreen-symbolic")
         self.btn_full.add_css_class("osd")
         self.btn_full.set_tooltip_text(tr("fullscreen_tip"))
@@ -389,23 +404,40 @@ class WallhavenWindow(Adw.Window):
         self.info.set_wrap(True)
         self.info.set_xalign(0)
         right.append(self.info)
+        self.tags_scroll = Gtk.ScrolledWindow()
+        self.tags_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.tags_scroll.set_overlay_scrolling(False)
+        self.tags_scroll.set_has_frame(False)
+        self.tags_scroll.set_hexpand(True)
+        self.tags_scroll.set_vexpand(False)
+        self.tags_scroll.set_min_content_height(96)
         self.tags_flow = Gtk.FlowBox()
         self.tags_flow.set_selection_mode(Gtk.SelectionMode.NONE)
         self.tags_flow.set_homogeneous(False)
-        self.tags_flow.set_max_children_per_line(20)
+        self.tags_flow.set_max_children_per_line(3)
         self.tags_flow.set_column_spacing(6)
         self.tags_flow.set_row_spacing(6)
+        self.tags_scroll.set_child(self.tags_flow)
+        self.tags_scroll.add_css_class("tags-area")
+        self.tags_flow.add_css_class("tags-flow")
         self._chip_css = Gtk.CssProvider()
         self._chip_css.load_from_string(
             "button.wh-tag { min-width: 0; min-height: 0; padding: 2px 10px; "
             "font-size: 0.85em; border-radius: 999px; "
             "background-color: rgba(255, 255, 255, 0.08); color: #e8e8e8; }"
             "label.wh-owned { background-color: rgba(0, 0, 0, 0.55); color: white; "
-            "border-radius: 999px; padding: 1px 7px; font-size: 0.8em; }")
+            "border-radius: 999px; padding: 1px 7px; font-size: 0.8em; }"
+            "scrollbar.vertical slider { min-width: 6px; min-height: 24px; }"
+            ".tags-area, .tags-area viewport, flowbox.tags-flow, "
+            "flowbox.tags-flow > flowboxchild { background: transparent; border: none; "
+            "box-shadow: none; outline: none; }"
+            "frame.preview-frame { background: transparent; border: none; "
+            "box-shadow: none; }"
+            "frame.preview-frame > picture { background: transparent; }")
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), self._chip_css,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        right.append(self.tags_flow)
+        right.append(self.tags_scroll)
         self.btn_dl = Gtk.Button(label=tr("download"))
         self.btn_dl.add_css_class("suggested-action")
         self.btn_dl.set_sensitive(False)
@@ -431,10 +463,15 @@ class WallhavenWindow(Adw.Window):
         self.status.set_wrap(True)
         self.status.set_xalign(0)
         right.append(self.status)
-        content.set_end_child(right)
+        self.right_scroll = Gtk.ScrolledWindow()
+        self.right_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.right_scroll.set_propagate_natural_height(True)
+        self.right_scroll.set_vexpand(True)
+        self.right_scroll.set_child(right)
+        content.set_end_child(self.right_scroll)
         self.content = content
         self.right = right
-        self.right.set_visible(False)
+        self._set_right_visible(False)
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_esc_key)
         self.add_controller(key)
@@ -447,6 +484,16 @@ class WallhavenWindow(Adw.Window):
         _run_bg(lambda: wh.enforce_cache_limit(str(CACHE_DIR)))  # poda inicial de 50 MB
         self.search(1)
 
+    def _set_right_visible(self, visible: bool):
+        try:
+            self.right.set_visible(visible)
+        except Exception:
+            pass
+        try:
+            self.right_scroll.set_visible(visible)
+        except Exception:
+            pass
+
     def _hide_preview(self):
         self.selected = None
         self.btn_dl.set_sensitive(False)
@@ -457,7 +504,7 @@ class WallhavenWindow(Adw.Window):
             self.preview.set_filename(None)
         except Exception:
             pass
-        self.right.set_visible(False)
+        self._set_right_visible(False)
 
     def _clear_chips(self):
         # remove filhos do FlowBox (padrão da grade: sem histórico de crash)
@@ -470,37 +517,26 @@ class WallhavenWindow(Adw.Window):
         except Exception:
             pass
 
-    def _show_chips(self, tags: list[dict], expanded: bool = False):
+    def _show_chips(self, tags: list[dict]):
         self._clear_chips()
         try:
             names = [t for t in (tags or []) if t.get("name")]
-            shown = names if expanded else names[:7]
-            for t in shown:
+            for t in names:
                 name = t["name"]
                 b = Gtk.Button(label=f"#{name}")
                 b.add_css_class("pill")
                 b.add_css_class("wh-tag")
                 b.set_tooltip_text(name)
                 b.set_halign(Gtk.Align.CENTER)
+                b.set_valign(Gtk.Align.CENTER)
                 b.set_hexpand(False)
+                b.set_vexpand(False)
                 try:
                     b.set_cursor_from_name("pointer")
                 except Exception:
                     pass
                 b.connect("clicked", self._on_chip, name)
                 self.tags_flow.append(b)
-            if len(names) > 7 and not expanded:
-                more = Gtk.Button(label=f"+{len(names) - 7}")
-                more.add_css_class("pill")
-                more.add_css_class("wh-tag")
-                more.set_halign(Gtk.Align.CENTER)
-                more.set_hexpand(False)
-                try:
-                    more.set_cursor_from_name("pointer")
-                except Exception:
-                    pass
-                more.connect("clicked", lambda _b: self._show_chips(tags, True))
-                self.tags_flow.append(more)
         except Exception:
             pass
 
@@ -674,7 +710,7 @@ class WallhavenWindow(Adw.Window):
         self._tags_gen += 1
         self._listing_gen += 1  # thumbs velhos param de baixar
         self._clear_chips()
-        self.right.set_visible(False)
+        self._set_right_visible(False)
         self._set_left_status(tr("searching"))
         self.lbl_count.set_text("")
         params = self._params(page)
@@ -692,7 +728,7 @@ class WallhavenWindow(Adw.Window):
         if err or res is None:
             self._set_left_status(tr("error", e=err))
             self.lbl_count.set_text("")
-            self.right.set_visible(False)
+            self._set_right_visible(False)
             return
         self.items = res["items"]
         self.page = res["page"]
@@ -715,7 +751,7 @@ class WallhavenWindow(Adw.Window):
         self.btn_queue.set_sensitive(False)
         self._tags_gen += 1
         self._clear_chips()
-        self.right.set_visible(False)
+        self._set_right_visible(False)
         self._rebuilding = False
         if not self.items:
             if self.page > 1:
@@ -913,11 +949,44 @@ class WallhavenWindow(Adw.Window):
             return None
         return getattr(sel[0].get_child(), "_wh_item", None)
 
+    def _reselect_current(self, flow) -> bool:
+        """Re-seleciona o item atual após reflow (True = manteve aberto)."""
+        sel = self.selected if isinstance(self.selected, dict) else None
+        if sel is None:
+            return False
+        try:
+            ids = {x.get("id") for x in self._visible_items()}
+        except Exception:
+            return False
+        if sel.get("id") not in ids:
+            return False
+        child = flow.get_first_child()
+        while child:
+            inner = child.get_child()
+            item = getattr(inner, "_wh_item", None)
+            if item is not None and item.get("id") == sel.get("id"):
+                self._rebuilding = True
+                try:
+                    flow.select_child(child)
+                except Exception:
+                    pass
+                finally:
+                    self._rebuilding = False
+                return True
+            child = child.get_next_sibling()
+        return False
+
+    def _end_select_guard(self):
+        self._rebuilding = False
+        return False
+
     def on_select(self, flow):
         if self._rebuilding:
             return
         it = self._find_item(flow)
         if not it:
+            if self._reselect_current(flow):
+                return  # reflow transitório: mantém o preview aberto
             self._hide_preview()
             return
         self.selected = it
@@ -932,11 +1001,22 @@ class WallhavenWindow(Adw.Window):
         if not self._queue_busy:
             self.btn_queue.set_label(tr("queue_page"))
             self.btn_queue.set_sensitive(True)
-        self.right.set_visible(True)
+        self._rebuilding = True  # abrir o painel relayouta a grade: engole o evento transitório
         try:
-            self.content.set_position(710)
+            self._set_right_visible(True)
+        finally:
+            GLib.idle_add(self._end_select_guard)
+        try:  # divisor segue livre: só recua se esmagaria a direita abaixo do mínimo
+            total = self.content.get_width()
+            m = self.right.measure(Gtk.Orientation.HORIZONTAL, -1)
+            right_min = m[0] if m and m[0] > 0 else 200
+            if total > 0:
+                limit = total - right_min - 6
+                if self.content.get_position() > limit:
+                    self.content.set_position(max(0, limit))
         except Exception:
             pass
+        self._reset_preview_box()
         self.preview.set_filename(None)
         _run_bg(lambda: self._load_preview(it))
         self._tags_gen += 1
@@ -989,6 +1069,53 @@ class WallhavenWindow(Adw.Window):
         except Exception as e:
             GLib.idle_add(self._preview_done, wid, None, str(e))
 
+    def _reset_preview_box(self):
+        try:
+            ov = self._preview_overlay
+            ov.set_hexpand(True)
+            ov.set_halign(Gtk.Align.FILL)
+            ov.set_size_request(120, 80)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _preview_box_for(avail: int, iw: int, ih: int, maxh: int = 420):
+        """Caixa que abraça a foto (proporção, teto, piso). None se inválido."""
+        try:
+            if avail <= 0 or iw <= 0 or ih <= 0:
+                return None
+            w = min(avail, iw)
+            h = w * ih / iw
+            if h > maxh:
+                h = maxh
+                w = h * iw / ih
+            return max(120, int(w)), max(80, int(h))
+        except Exception:
+            return None
+
+    def _fit_preview_box(self, path: str) -> None:
+        """Ajusta a moldura ao tamanho da foto (sem faixa de fundo, sem corte)."""
+        if GdkPixbuf is None:
+            return
+        try:
+            _fmt, iw, ih = GdkPixbuf.Pixbuf.get_file_info(path)
+        except Exception:
+            return
+        try:
+            avail = self._preview_overlay.get_width()
+        except Exception:
+            return
+        box = self._preview_box_for(avail, iw, ih)
+        if box is None:
+            return
+        try:
+            ov = self._preview_overlay
+            ov.set_hexpand(False)
+            ov.set_halign(Gtk.Align.CENTER)
+            ov.set_size_request(*box)
+        except Exception:
+            pass
+
     def _preview_done(self, wid: str, path, err):
         sel = self.selected if isinstance(self.selected, dict) else None
         if sel is None or sel.get("id") != wid:
@@ -1000,6 +1127,8 @@ class WallhavenWindow(Adw.Window):
                 self.preview.set_filename(path)
             except Exception as e:
                 self.status.set_text(tr("preview_fail", e=e))
+                return False
+            self._fit_preview_box(path)
         return False
 
     def on_download(self, _btn):
